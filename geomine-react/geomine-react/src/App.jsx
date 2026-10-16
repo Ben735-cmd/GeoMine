@@ -57,11 +57,78 @@ function Badge({ tone = "neutral", children }) {
   return <span className={"badge " + tone}>{children}</span>;
 }
 
-function Tile({ value, label }) {
+function Tile({ value, label, loading }) {
   return (
-    <div className="tile">
-      <div className="tile-n">{value}</div>
+    <div className="tile" aria-busy={loading ? "true" : undefined}>
+      <div className="tile-n">{loading ? <Sk w={56} h={30} /> : value}</div>
       <div className="tile-l">{label}</div>
+    </div>
+  );
+}
+
+/* ---------- Loading skeletons ---------- */
+function Sk({ w = "100%", h = 14, r }) {
+  return <span className="sk" style={{ width: w, height: h, borderRadius: r }} aria-hidden="true" />;
+}
+
+function SkRows({ cols, rows = 3 }) {
+  const widths = ["62%", "38%", "50%", "30%", "44%", "56%"];
+  return Array.from({ length: rows }, (_, i) => (
+    <tr key={i} aria-hidden="true">
+      {Array.from({ length: cols }, (_, j) => (
+        <td key={j}><Sk w={widths[(i + j) % widths.length]} /></td>
+      ))}
+    </tr>
+  ));
+}
+
+function SkTable({ heads, rows = 4 }) {
+  return (
+    <div className="table-wrap" aria-busy="true">
+      <span className="sr" role="status">Loading</span>
+      <table>
+        <thead><tr>{heads.map((h, i) => <th key={i}>{h}</th>)}</tr></thead>
+        <tbody><SkRows cols={heads.length} rows={rows} /></tbody>
+      </table>
+    </div>
+  );
+}
+
+function SkGrid({ n = 3 }) {
+  return (
+    <div className="grid" aria-busy="true">
+      <span className="sr" role="status">Loading datasets</span>
+      {Array.from({ length: n }, (_, i) => (
+        <div key={i} className="dtile skel" aria-hidden="true">
+          <span className="dtile-top"><Sk w={62} h={20} r={999} /><Sk w={70} h={12} /></span>
+          <Sk w="70%" h={18} />
+          <Sk w="55%" h={12} />
+          <Sk w="80%" h={12} />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function PageSkeleton() {
+  return (
+    <div aria-busy="true">
+      <span className="sr" role="status">Loading</span>
+      <div className="pagehead">
+        <Sk w="34%" h={30} />
+        <div style={{ height: 10 }} />
+        <Sk w="46%" h={14} />
+      </div>
+      <div className="tiles">
+        {[0, 1, 2, 3].map((i) => (
+          <div key={i} className="tile" aria-hidden="true">
+            <Sk w={56} h={30} />
+            <div style={{ height: 8 }} />
+            <Sk w="60%" h={12} />
+          </div>
+        ))}
+      </div>
+      <SkGrid />
     </div>
   );
 }
@@ -73,6 +140,26 @@ function Toast({ msg, onClose }) {
       {msg.busy && <span className="spin" aria-hidden="true" />}
       <span>{msg.text}</span>
       <button className="x" onClick={onClose} aria-label="Dismiss message">&times;</button>
+    </div>
+  );
+}
+
+function ConfirmDialog({ title, children, confirmLabel = "Delete", busy, onConfirm, onCancel }) {
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === "Escape" && !busy) onCancel(); };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [busy]);
+  return (
+    <div className="overlay" onMouseDown={(e) => { if (e.target === e.currentTarget && !busy) onCancel(); }}>
+      <div className="dialog" role="dialog" aria-modal="true" aria-labelledby="dlg-title">
+        <h2 id="dlg-title">{title}</h2>
+        <div className="dlg-body">{children}</div>
+        <div className="row end">
+          <button className="btn ghost" autoFocus onClick={onCancel} disabled={busy}>Cancel</button>
+          <button className="btn danger" onClick={onConfirm} disabled={busy}>{busy ? "Deleting…" : confirmLabel}</button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -109,15 +196,18 @@ export default function App() {
 
   if (user === undefined) {
     return (
-      <div className="splash">
-        <span className="spin" aria-hidden="true" /> Loading…
-      </div>
+      <>
+        <header className="topbar">
+          <div className="brand"><Logo /><span>GeoMine</span></div>
+        </header>
+        <main className="page"><PageSkeleton /></main>
+      </>
     );
   }
   if (!user) return <Auth />;
 
   let body;
-  if (org === undefined) body = <p className="mut pad">Loading your workspace…</p>;
+  if (org === undefined) body = <PageSkeleton />;
   else if (org === null) body = <OrgSetup note={note} onDone={loadOrg} />;
   else if (ds) body = <DatasetView ds={ds} user={user} note={note} onBack={() => setDs(null)} />;
   else body = <Datasets org={org} user={user} note={note} onOpen={setDs} />;
@@ -376,14 +466,40 @@ function OrgSetup({ note, onDone }) {
   );
 }
 
+/* ---------- Deleting ---------- */
+// Removes the stored files first (the storage rules need the dataset to still exist), then the dataset.
+// Its documents and records are removed with it.
+async function deleteDataset(d, note) {
+  const { data: files } = await sb.storage.from(BUCKET).list(d.id, { limit: 1000 });
+  if (files && files.length) await sb.storage.from(BUCKET).remove(files.map((f) => `${d.id}/${f.name}`));
+  const { data, error } = await sb.from("datasets").delete().eq("id", d.id).select("id");
+  if (error) { note(error.message, true); return false; }
+  if (!data || !data.length) { note("The dataset could not be deleted. Check that you have permission to edit it.", true); return false; }
+  return true;
+}
+
+// Removes the records extracted from a document, its stored file, and the document itself.
+async function deleteDocument(d, note) {
+  const occ = await sb.from("mineral_occurrences").delete().eq("document_id", d.id).select("id");
+  if (occ.error) { note(occ.error.message, true); return false; }
+  await sb.storage.from(BUCKET).remove([d.storage_path]);
+  const { data, error } = await sb.from("source_documents").delete().eq("id", d.id).select("id");
+  if (error) { note(error.message, true); return false; }
+  if (!data || !data.length) { note("The document could not be deleted. Check that you have permission to edit this dataset.", true); return false; }
+  return true;
+}
+
 /* ---------- Datasets ---------- */
 function Datasets({ org, user, note, onOpen }) {
   const [list, setList] = useState(null);
-  const [docCount, setDocCount] = useState(null);
+  const [docCount, setDocCount] = useState(undefined);
   const blank = { name: "", visibility: "private", source_name: "", licence_terms: "", licence_ref: "", redistribution_allowed: false };
   const [f, setF] = useState(blank);
   const [tried, setTried] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [open, setOpen] = useState(false);
+  const [toDelete, setToDelete] = useState(null);
+  const [deleting, setDeleting] = useState(false);
   const set = (k) => (e) => setF({ ...f, [k]: e.target.type === "checkbox" ? e.target.checked : e.target.value });
   const nameErr = !f.name.trim() ? "Enter a name for the dataset." : "";
 
@@ -417,10 +533,18 @@ function Datasets({ org, user, note, onOpen }) {
     note("Dataset created.");
     setF(blank);
     setTried(false);
+    setOpen(false);
     load();
   };
 
   const shared = (list || []).filter((d) => d.visibility === "shared").length;
+
+  const remove = async () => {
+    setDeleting(true);
+    const ok = await deleteDataset(toDelete, note);
+    setDeleting(false);
+    if (ok) { setToDelete(null); note("Dataset deleted."); load(); }
+  };
 
   return (
     <>
@@ -430,26 +554,26 @@ function Datasets({ org, user, note, onOpen }) {
       </div>
 
       <div className="tiles">
-        <Tile value={list ? list.length : "–"} label="Datasets" />
-        <Tile value={list ? list.length - shared : "–"} label="Private" />
-        <Tile value={list ? shared : "–"} label="Shared" />
-        <Tile value={docCount ?? "–"} label="Source documents" />
+        <Tile loading={list === null} value={list ? list.length : "–"} label="Datasets" />
+        <Tile loading={list === null} value={list ? list.length - shared : "–"} label="Private" />
+        <Tile loading={list === null} value={list ? shared : "–"} label="Shared" />
+        <Tile loading={list === null || docCount === undefined} value={docCount ?? "–"} label="Source documents" />
       </div>
 
-      <div className="split">
-        <section>
-          <h2>Datasets</h2>
-          {list === null ? (
-            <p className="mut">Loading datasets…</p>
-          ) : list.length === 0 ? (
-            <div className="empty">
-              <h3>No datasets yet</h3>
-              <p className="mut">Create your first dataset using the form. Each dataset holds documents from one source and licence.</p>
-            </div>
-          ) : (
-            <div className="grid">
-              {list.map((d) => (
-                <button key={d.id} className="dtile" onClick={() => onOpen(d)}>
+      <section>
+        <h2>Datasets</h2>
+        {list === null ? (
+          <SkGrid />
+        ) : list.length === 0 ? (
+          <div className="empty">
+            <h3>No datasets yet</h3>
+            <p className="mut">Create your first dataset below. Each dataset holds documents from one source and licence.</p>
+          </div>
+        ) : (
+          <div className="grid">
+            {list.map((d) => (
+              <article key={d.id} className="dtile">
+                <button className="dtile-main" onClick={() => onOpen(d)}>
                   <span className="dtile-top">
                     <Badge tone={d.visibility === "shared" ? "info" : "neutral"}>{d.visibility === "shared" ? "Shared" : "Private"}</Badge>
                     <span className="mut">{fmtDate(d.created_at)}</span>
@@ -458,50 +582,84 @@ function Datasets({ org, user, note, onOpen }) {
                   <span className="dtile-meta">{d.source_name ? "Source: " + d.source_name : "No source recorded"}</span>
                   <span className="dtile-meta">{d.licence_terms ? "Licence: " + d.licence_terms : "No licence terms recorded"}</span>
                 </button>
-              ))}
-            </div>
-          )}
-        </section>
+                <div className="dtile-foot">
+                  <button className="link inline danger" onClick={() => setToDelete(d)}>Delete</button>
+                </div>
+              </article>
+            ))}
+          </div>
+        )}
+      </section>
 
-        <aside>
-          <form className="panel sticky" noValidate onSubmit={create}>
-            <h2>New dataset</h2>
-            <Field label="Dataset name" required error={tried && nameErr}>
-              <input
-                className={tried && nameErr ? "invalid" : ""}
-                aria-required="true"
-                placeholder="e.g. Kitwe geological reports"
-                value={f.name}
-                onChange={set("name")}
-              />
-            </Field>
-            <Field label="Visibility" required hint={f.visibility === "shared" ? "Readable by all signed-in users." : "Only members of your organization can read it."}>
-              <select value={f.visibility} onChange={set("visibility")}>
-                <option value="private">Private</option>
-                <option value="shared">Shared</option>
-              </select>
-            </Field>
-            <fieldset>
-              <legend>Source and licence</legend>
-              <Field label="Source">
-                <input placeholder="e.g. GSD Digital Store" value={f.source_name} onChange={set("source_name")} />
-              </Field>
-              <Field label="Licence terms">
-                <input value={f.licence_terms} onChange={set("licence_terms")} />
-              </Field>
-              <Field label="Licence or purchase reference">
-                <input value={f.licence_ref} onChange={set("licence_ref")} />
-              </Field>
-              <label className="check">
-                <input type="checkbox" checked={f.redistribution_allowed} onChange={set("redistribution_allowed")} />
-                <span>Licence allows redistribution of the original files</span>
-              </label>
-            </fieldset>
-            <button className="btn block" type="submit" disabled={saving}>{saving ? "Creating…" : "Create dataset"}</button>
-            <p className="reqnote"><span className="req">*</span> Required field</p>
+      <section className="create">
+        <button
+          type="button"
+          className={"create-toggle" + (open ? " open" : "")}
+          aria-expanded={open}
+          aria-controls="new-dataset"
+          onClick={() => setOpen(!open)}
+        >
+          <span className="plus" aria-hidden="true">{open ? "\u2212" : "+"}</span>
+          <span>Create new dataset</span>
+          <svg className="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="m6 9 6 6 6-6" />
+          </svg>
+        </button>
+
+        {open && (
+          <form id="new-dataset" className="panel create-form" noValidate onSubmit={create}>
+            <div className="two">
+              <div>
+                <Field label="Dataset name" required error={tried && nameErr}>
+                  <input
+                    autoFocus
+                    className={tried && nameErr ? "invalid" : ""}
+                    aria-required="true"
+                    placeholder="e.g. Kitwe geological reports"
+                    value={f.name}
+                    onChange={set("name")}
+                  />
+                </Field>
+                <Field label="Visibility" required hint={f.visibility === "shared" ? "Readable by all signed-in users." : "Only members of your organization can read it."}>
+                  <select value={f.visibility} onChange={set("visibility")}>
+                    <option value="private">Private</option>
+                    <option value="shared">Shared</option>
+                  </select>
+                </Field>
+              </div>
+              <fieldset>
+                <legend>Source and licence</legend>
+                <Field label="Source">
+                  <input placeholder="e.g. GSD Digital Store" value={f.source_name} onChange={set("source_name")} />
+                </Field>
+                <Field label="Licence terms">
+                  <input value={f.licence_terms} onChange={set("licence_terms")} />
+                </Field>
+                <Field label="Licence or purchase reference">
+                  <input value={f.licence_ref} onChange={set("licence_ref")} />
+                </Field>
+                <label className="check">
+                  <input type="checkbox" checked={f.redistribution_allowed} onChange={set("redistribution_allowed")} />
+                  <span>Licence allows redistribution of the original files</span>
+                </label>
+              </fieldset>
+            </div>
+            <div className="row between">
+              <span className="reqnote"><span className="req">*</span> Required field</span>
+              <span className="row">
+                <button type="button" className="btn ghost" onClick={() => { setOpen(false); setTried(false); }}>Cancel</button>
+                <button className="btn" type="submit" disabled={saving}>{saving ? "Creating…" : "Create dataset"}</button>
+              </span>
+            </div>
           </form>
-        </aside>
-      </div>
+        )}
+      </section>
+
+      {toDelete && (
+        <ConfirmDialog title={`Delete "${toDelete.name}"?`} busy={deleting} onConfirm={remove} onCancel={() => setToDelete(null)}>
+          <p>This permanently deletes the dataset, all of its documents and every record extracted from them. This cannot be undone.</p>
+        </ConfirmDialog>
+      )}
     </>
   );
 }
@@ -511,11 +669,16 @@ function DatasetView({ ds, user, note, onBack }) {
   const [docs, setDocs] = useState([]);
   const [busy, setBusy] = useState(null);
   const [tab, setTab] = useState("documents");
-  const [pending, setPending] = useState(0);
+  const [pending, setPending] = useState(null);
+  const [docsReady, setDocsReady] = useState(false);
+  const [delDoc, setDelDoc] = useState(null);
+  const [delDs, setDelDs] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   const loadDocs = async () => {
     const { data } = await sb.from("source_documents").select("*").eq("dataset_id", ds.id).order("uploaded_at", { ascending: false });
     setDocs(data || []);
+    setDocsReady(true);
   };
   useEffect(() => { loadDocs(); }, [ds.id]);
 
@@ -525,11 +688,28 @@ function DatasetView({ ds, user, note, onBack }) {
     const { data, error } = await sb.functions.invoke("extract-document", { body: { document_id: id } });
     if (error) {
       let m = error.message;
-      try { m = (await error.context.json()).error || m; } catch { /* keep default message */ }
+      try {
+        const t = await error.context.text();
+        try { const b = JSON.parse(t); m = b.error || b.message || t || m; } catch { m = t || m; }
+      } catch { /* keep default message */ }
+      if (error.context && error.context.status) m += " (HTTP " + error.context.status + ")";
       note(m, true);
     } else note(`Done: ${data.records} records found, ${data.flagged} flagged for checking.`);
     setBusy(null);
     loadDocs();
+  };
+
+  const removeDoc = async () => {
+    setDeleting(true);
+    const ok = await deleteDocument(delDoc, note);
+    setDeleting(false);
+    if (ok) { setDelDoc(null); note("Document deleted."); loadDocs(); }
+  };
+  const removeDs = async () => {
+    setDeleting(true);
+    const ok = await deleteDataset(ds, note);
+    setDeleting(false);
+    if (ok) { note("Dataset deleted."); onBack(); }
   };
 
   const extracted = docs.filter((d) => d.status === "extracted").length;
@@ -545,24 +725,27 @@ function DatasetView({ ds, user, note, onBack }) {
         Back to datasets
       </button>
 
-      <div className="pagehead">
-        <h1>{ds.name}</h1>
-        <div className="meta-row">
-          <Badge tone={ds.visibility === "shared" ? "info" : "neutral"}>{ds.visibility === "shared" ? "Shared" : "Private"}</Badge>
-          {ds.source_name && <span>Source: <b>{ds.source_name}</b></span>}
-          {ds.licence_terms && <span>Licence: {ds.licence_terms}</span>}
-          {ds.licence_ref && <span>Reference: {ds.licence_ref}</span>}
-          <Badge tone={ds.redistribution_allowed ? "ok" : "neutral"}>
-            {ds.redistribution_allowed ? "Original files can be redistributed" : "Original files not for redistribution"}
-          </Badge>
+      <div className="pagehead ph-row">
+        <div>
+          <h1>{ds.name}</h1>
+          <div className="meta-row">
+            <Badge tone={ds.visibility === "shared" ? "info" : "neutral"}>{ds.visibility === "shared" ? "Shared" : "Private"}</Badge>
+            {ds.source_name && <span>Source: <b>{ds.source_name}</b></span>}
+            {ds.licence_terms && <span>Licence: {ds.licence_terms}</span>}
+            {ds.licence_ref && <span>Reference: {ds.licence_ref}</span>}
+            <Badge tone={ds.redistribution_allowed ? "ok" : "neutral"}>
+              {ds.redistribution_allowed ? "Original files can be redistributed" : "Original files not for redistribution"}
+            </Badge>
+          </div>
         </div>
+        <button className="btn ghost danger sm" onClick={() => setDelDs(true)}>Delete dataset</button>
       </div>
 
       <div className="tiles">
-        <Tile value={docs.length} label="Documents" />
-        <Tile value={extracted} label="Extracted" />
-        <Tile value={docs.length - extracted} label="Awaiting extraction" />
-        <Tile value={pending >= 60 ? "60+" : pending} label="Fields to review" />
+        <Tile loading={!docsReady} value={docs.length} label="Documents" />
+        <Tile loading={!docsReady} value={extracted} label="Extracted" />
+        <Tile loading={!docsReady} value={docs.length - extracted} label="Awaiting extraction" />
+        <Tile loading={pending === null} value={pending >= 60 ? "60+" : pending} label="Fields to review" />
       </div>
 
       <div className="tabs" role="tablist">
@@ -576,7 +759,9 @@ function DatasetView({ ds, user, note, onBack }) {
 
       <div hidden={tab !== "documents"}>
         <div className="panel flush">
-          {docs.length === 0 ? (
+          {!docsReady ? (
+            <SkTable heads={["Title", "Type", "Status", ""]} />
+          ) : docs.length === 0 ? (
             <div className="empty">
               <h3>No documents yet</h3>
               <p className="mut">Upload a report, map or borehole log to start extracting mineral occurrences.</p>
@@ -594,12 +779,15 @@ function DatasetView({ ds, user, note, onBack }) {
                       <td><b>{d.title}</b></td>
                       <td>{sentence(d.doc_type)}</td>
                       <td><Badge tone={tone(d.status)}>{sentence(d.status)}</Badge></td>
-                      <td className="right">
+                      <td className="right nowrap">
                         {d.status !== "extracted" && (
-                          <button className="btn sm" disabled={busy === d.id} onClick={() => extract(d.id)}>
-                            {busy === d.id ? "Extracting…" : "Extract data"}
-                          </button>
+                          <>
+                            <button className="btn sm" disabled={busy === d.id} onClick={() => extract(d.id)}>
+                              {busy === d.id ? "Extracting…" : "Extract data"}
+                            </button>{" "}
+                          </>
                         )}
+                        <button className="btn ghost danger sm" disabled={busy === d.id} onClick={() => setDelDoc(d)}>Delete</button>
                       </td>
                     </tr>
                   ))}
@@ -620,12 +808,23 @@ function DatasetView({ ds, user, note, onBack }) {
       </div>
 
       <div hidden={tab !== "review"}>
-        <Review docs={docs} user={user} note={note} onCount={setPending} />
+        <Review docs={docs} ready={docsReady} user={user} note={note} onCount={setPending} />
       </div>
 
       <div hidden={tab !== "records"}>
         <Records ds={ds} docs={docs} active={tab === "records"} note={note} onGoDocuments={() => setTab("documents")} />
       </div>
+
+      {delDoc && (
+        <ConfirmDialog title={`Delete "${delDoc.title}"?`} busy={deleting} onConfirm={removeDoc} onCancel={() => setDelDoc(null)}>
+          <p>This permanently deletes the file and any records extracted from it. This cannot be undone.</p>
+        </ConfirmDialog>
+      )}
+      {delDs && (
+        <ConfirmDialog title={`Delete "${ds.name}"?`} busy={deleting} onConfirm={removeDs} onCancel={() => setDelDs(false)}>
+          <p>This permanently deletes the dataset, all of its documents and every record extracted from them. This cannot be undone.</p>
+        </ConfirmDialog>
+      )}
     </>
   );
 }
@@ -742,11 +941,14 @@ function UploadForm({ ds, user, note, onDone }) {
 }
 
 /* ---------- Review queue ---------- */
-function Review({ docs, user, note, onCount }) {
+function Review({ docs, ready, user, note, onCount }) {
   const [rows, setRows] = useState(null);
   const [vals, setVals] = useState({});
+  const [done, setDone] = useState({}); // field id -> decision made in this session
+  const [working, setWorking] = useState(null);
 
   const load = async () => {
+    if (!ready) return;
     const ids = docs.map((d) => d.id);
     if (!ids.length) { setRows([]); onCount(0); return; }
     const { data, error } = await sb.from("review_queue").select("*").in("document_id", ids)
@@ -755,8 +957,9 @@ function Review({ docs, user, note, onCount }) {
     setRows(data);
     onCount(data.length);
     setVals(Object.fromEntries(data.map((r) => [r.id, r.extracted_value ?? ""])));
+    setDone({});
   };
-  useEffect(() => { load(); }, [docs]);
+  useEffect(() => { load(); }, [docs, ready]);
 
   const openPage = async (docId, page) => {
     const d = docs.find((x) => x.id === docId);
@@ -766,29 +969,47 @@ function Review({ docs, user, note, onCount }) {
   };
 
   const decide = async (r, action) => {
+    if (working) return;
     const val = (vals[r.id] ?? "").trim();
     let status = action, corrected = null;
     if (action === "confirm") {
       if (val !== (r.extracted_value ?? "").trim()) { status = "corrected"; corrected = val; } else status = "accepted";
     }
-    if (status === "corrected" && !(await applyFix(r.record_id, r.field_name, val, note))) return;
-    const { error } = await sb.from("extracted_fields").update({
-      review: status, corrected_value: corrected, reviewed_by: user.id, reviewed_at: new Date().toISOString(),
-    }).eq("id", r.id);
-    if (error) return note(error.message, true);
-    await finishRecord(r.record_id);
-    note(status === "accepted" ? "Value confirmed." : status === "corrected" ? "Correction saved." : "Value rejected.");
-    load();
+    setWorking(r.id);
+    try {
+      if (status === "corrected" && !(await applyFix(r.record_id, r.field_name, val, note))) return;
+      const { data, error } = await sb.from("extracted_fields").update({
+        review: status, corrected_value: corrected, reviewed_by: user.id, reviewed_at: new Date().toISOString(),
+      }).eq("id", r.id).select("id");
+      if (error) return note(error.message, true);
+      if (!data || data.length === 0) return note("This decision could not be saved. Check that you have permission to edit this dataset, then try again.", true);
+      await finishRecord(r.record_id);
+      const next = { ...done, [r.id]: status };
+      setDone(next);
+      onCount(rows.length - Object.keys(next).length);
+      note(status === "accepted" ? "Value confirmed." : status === "corrected" ? "Correction saved." : "Value rejected.");
+    } finally {
+      setWorking(null);
+    }
   };
+
+  const doneCount = Object.keys(done).length;
+  const clearDone = () => { setRows(rows.filter((r) => !done[r.id])); setDone({}); };
 
   return (
     <div className="panel flush">
       <div className="panel-head">
-        <h2>Review queue</h2>
-        <p className="mut">Lowest confidence first. Edit a value if it is wrong, then confirm it. Showing up to 60 fields.</p>
+        <div className="row between">
+          <h2>Review queue</h2>
+          {doneCount > 0 && <button className="btn ghost sm" onClick={clearDone}>Clear {doneCount} completed</button>}
+        </div>
+        <p className="mut">
+          Lowest confidence first. Edit a value if it is wrong, then confirm it. A record shows as Confirmed on the Records tab once
+          all of its fields have been reviewed. Showing up to 60 fields.
+        </p>
       </div>
       {rows === null ? (
-        <p className="mut pad">Loading…</p>
+        <SkTable heads={["Field", "Extracted value", "Confidence", "Source", ""]} />
       ) : rows.length === 0 ? (
         <div className="empty">
           <h3>Nothing waiting for review</h3>
@@ -802,15 +1023,18 @@ function Review({ docs, user, note, onCount }) {
             </thead>
             <tbody>
               {rows.map((r) => {
+                const state = done[r.id];
                 const edited = (vals[r.id] ?? "").trim() !== (r.extracted_value ?? "").trim();
                 const low = (r.confidence ?? 0) < 0.6;
+                const saving = working === r.id;
                 return (
-                  <tr key={r.id}>
+                  <tr key={r.id} className={state ? "done" : ""}>
                     <td>{sentence(r.field_name)}</td>
                     <td>
                       <input
                         className="full"
                         aria-label={"Value for " + nice(r.field_name)}
+                        disabled={!!state || saving}
                         value={vals[r.id] ?? ""}
                         onChange={(e) => setVals({ ...vals, [r.id]: e.target.value })}
                       />
@@ -827,8 +1051,18 @@ function Review({ docs, user, note, onCount }) {
                       </button>
                     </td>
                     <td className="right nowrap">
-                      <button className="btn sm" onClick={() => decide(r, "confirm")}>{edited ? "Save correction" : "Confirm"}</button>{" "}
-                      <button className="btn ghost sm" onClick={() => decide(r, "rejected")}>Reject</button>
+                      {state ? (
+                        <Badge tone={state === "rejected" ? "bad" : "ok"}>
+                          {state === "accepted" ? "Confirmed" : state === "corrected" ? "Correction saved" : "Rejected"}
+                        </Badge>
+                      ) : (
+                        <>
+                          <button className="btn sm" disabled={saving} onClick={() => decide(r, "confirm")}>
+                            {saving ? "Saving…" : edited ? "Save correction" : "Confirm"}
+                          </button>{" "}
+                          <button className="btn ghost sm" disabled={saving} onClick={() => decide(r, "rejected")}>Reject</button>
+                        </>
+                      )}
                     </td>
                   </tr>
                 );
@@ -855,8 +1089,9 @@ async function applyFix(recordId, field, val, note) {
     }
     patch.location = `SRID=4326;POINT(${lon} ${lat})`;
   }
-  const { error } = await sb.from("mineral_occurrences").update(patch).eq("id", recordId);
+  const { data, error } = await sb.from("mineral_occurrences").update(patch).eq("id", recordId).select("id");
   if (error) { note(error.message, true); return false; }
+  if (!data || data.length === 0) { note("The correction could not be saved. Check that you have permission to edit this dataset.", true); return false; }
   return true;
 }
 
@@ -1013,7 +1248,18 @@ function Records({ ds, docs, active, note, onGoDocuments }) {
     download(slug + "-occurrences.geojson", JSON.stringify(fc, null, 2), "application/geo+json");
   };
 
-  if (rows === null) return <div className="panel"><p className="mut">Loading records…</p></div>;
+  if (rows === null) {
+    return (
+      <div className="panel flush" aria-busy="true">
+        <div className="toolbar" aria-hidden="true">
+          <Sk w="38%" h={38} r={7} />
+          <Sk w={150} h={38} r={7} />
+          <Sk w={130} h={38} r={7} />
+        </div>
+        <SkTable heads={["Name", "Commodities", "Deposit type", "Status", "Coordinates", "Source"]} />
+      </div>
+    );
+  }
 
   if (rows.length === 0) {
     return (

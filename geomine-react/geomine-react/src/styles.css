@@ -175,10 +175,15 @@ legend { font-size: 13px; font-weight: 600; color: var(--ink-2); padding: 0 6px;
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; }
 
 .dtile {
-  display: flex; flex-direction: column; gap: 6px; text-align: left; font: inherit; color: inherit;
-  padding: 16px; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; cursor: pointer;
+  display: flex; flex-direction: column; text-align: left; font: inherit; color: inherit;
+  background: var(--surface); border: 1px solid var(--line); border-radius: 10px; overflow: hidden;
 }
 .dtile:hover { border-color: var(--brand); background: var(--brand-soft); }
+.dtile-main {
+  display: flex; flex-direction: column; gap: 6px; flex: 1; width: 100%; text-align: left; font: inherit; color: inherit;
+  padding: 16px 16px 12px; background: none; border: 0; cursor: pointer;
+}
+.dtile-foot { display: flex; justify-content: flex-end; padding: 6px 14px; border-top: 1px solid var(--line-2); }
 .dtile-top { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
 .dtile-top .mut { font-size: 13px; }
 .dtile-name { font-size: 16px; font-weight: 620; letter-spacing: -0.01em; margin-top: 4px; }
@@ -316,3 +321,51 @@ tbody tr:hover { background: var(--surface-2); }
 .legend { display: flex; flex-wrap: wrap; gap: 6px 18px; margin-top: 10px; font-size: 13.5px; color: var(--ink-2); }
 .legend i { display: inline-block; width: 11px; height: 11px; border-radius: 50%; margin-right: 6px; vertical-align: -1px; }
 @media (max-width: 640px) { .map { height: 360px; } .seg.compact { width: 100%; } }
+
+/* ---------- Loading skeletons ---------- */
+.sk {
+  display: block; border-radius: 6px;
+  background: linear-gradient(90deg, var(--line-2) 25%, var(--line) 50%, var(--line-2) 75%);
+  background-size: 200% 100%; animation: shimmer 1.4s ease-in-out infinite;
+}
+@keyframes shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+@media (prefers-reduced-motion: reduce) { .sk { animation: none; } }
+.dtile.skel { gap: 10px; cursor: default; padding: 16px; }
+.dtile.skel:hover { border-color: var(--line); background: var(--surface); }
+.tile-n .sk { margin: 2px 0; }
+
+/* ---------- Create-dataset accordion, delete actions, dialog ---------- */
+.create { margin-top: 28px; }
+.create-toggle {
+  display: flex; align-items: center; gap: 12px; width: 100%; text-align: left; font: inherit; font-weight: 600; color: var(--ink);
+  padding: 14px 16px; background: var(--surface); border: 1px dashed var(--line); border-radius: 10px; cursor: pointer;
+}
+.create-toggle:hover { border-color: var(--brand); background: var(--brand-soft); }
+.create-toggle.open { border-style: solid; border-color: var(--brand); border-radius: 10px 10px 0 0; }
+.create-toggle .plus {
+  display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; border-radius: 6px;
+  background: var(--brand); color: var(--on-brand); font-size: 17px; line-height: 1;
+}
+.create-toggle .chev { margin-left: auto; color: var(--ink-2); transition: transform .15s; }
+.create-toggle.open .chev { transform: rotate(180deg); }
+.create-form { border-top: 0; border-radius: 0 0 10px 10px; border-color: var(--brand); }
+.create-form fieldset { margin: 0 0 16px; }
+
+.ph-row { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
+.btn.danger { background: var(--danger); color: #fff; }
+.btn.danger:hover:not(:disabled) { background: var(--danger); filter: brightness(.9); }
+.btn.ghost.danger { background: transparent; color: var(--danger); border-color: var(--line); }
+.btn.ghost.danger:hover:not(:disabled) { background: var(--danger-soft); border-color: var(--danger); }
+.link.danger { color: var(--danger); }
+@media (prefers-color-scheme: dark) { .btn.danger { color: #1b0906; } }
+
+.overlay { position: fixed; inset: 0; z-index: 60; display: flex; align-items: center; justify-content: center; padding: 16px; background: rgba(10, 17, 22, .6); }
+.dialog { width: 100%; max-width: 440px; padding: 22px; border-radius: 12px; background: var(--surface); border: 1px solid var(--line); box-shadow: 0 16px 48px rgba(0, 0, 0, .35); }
+.dialog h2 { word-break: break-word; }
+.dlg-body { margin-bottom: 18px; color: var(--ink-2); }
+.dlg-body p { margin: 0; }
+.row.end { justify-content: flex-end; }
+
+tr.done td { background: var(--surface-2); }
+tr.done input { opacity: .75; }
+@media (max-width: 640px) { .ph-row { flex-direction: column; } }
